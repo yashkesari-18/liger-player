@@ -1,0 +1,92 @@
+# Builds LigerPlayer for Windows on GitHub's own Windows machines.
+#  - Every push to main, and every manual run (Actions tab → "Build Windows app" → Run workflow), produces
+#    a downloadable "LigerPlayer-windows" artifact containing the installer and the portable zip.
+#  - Pushing a tag such as v0.3.0 also publishes them on the repository's Releases page.
+name: Build Windows app
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+    paths: ["desktop/**", ".github/workflows/windows.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python packages
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r desktop/requirements.txt pyinstaller==6.11.1
+
+      - name: Download libmpv (playback engine)
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $headers = @{ Authorization = "Bearer $env:GH_TOKEN"; "User-Agent" = "liger-build" }
+          $rel = Invoke-RestMethod -Uri "https://api.github.com/repos/shinchiro/mpv-winbuild-cmake/releases/latest" -Headers $headers
+          $asset = $rel.assets | Where-Object { $_.name -match '^mpv-dev-x86_64-\d{8}-git-[0-9a-f]+\.7z$' } | Select-Object -First 1
+          if (-not $asset) { throw "No mpv-dev-x86_64 package found in release $($rel.tag_name)" }
+          Write-Host "Using $($asset.name) from $($rel.tag_name)"
+          Invoke-WebRequest -Uri $asset.browser_download_url -OutFile mpv-dev.7z
+          7z x mpv-dev.7z -ompv-dev -y | Out-Null
+          $dll = Get-ChildItem -Path mpv-dev -Recurse -Filter "libmpv-2.dll" | Select-Object -First 1
+          if (-not $dll) { throw "libmpv-2.dll not found in $($asset.name)" }
+          Copy-Item $dll.FullName desktop\libmpv-2.dll
+          "$($asset.name)" | Out-File desktop\LIBMPV-VERSION.txt -Encoding utf8
+
+      - name: Build LigerPlayer.exe
+        working-directory: desktop
+        run: pyinstaller --noconfirm liger.spec
+
+      - name: Check that the engine loads
+        working-directory: desktop
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath "dist\LigerPlayer\LigerPlayer.exe" -ArgumentList "--selftest", "$PWD\selftest.txt" -PassThru -Wait
+          $r = Get-Content selftest.txt -Raw
+          Write-Host "Self-test: $r"
+          if (-not $r.StartsWith("ok")) { throw "LigerPlayer.exe could not load libmpv: $r" }
+
+      - name: Version number
+        id: ver
+        shell: pwsh
+        run: |
+          $v = if ("${{ github.ref_type }}" -eq "tag") { "${{ github.ref_name }}".TrimStart("v") } else { "0.3.0" }
+          "version=$v" >> $env:GITHUB_OUTPUT
+
+      - name: Portable zip
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item LICENSE-DESKTOP.txt, desktop\THIRD-PARTY-NOTICES.txt, desktop\LIBMPV-VERSION.txt desktop\dist\LigerPlayer\
+          Compress-Archive -Path desktop\dist\LigerPlayer -DestinationPath "dist\LigerPlayer-${{ steps.ver.outputs.version }}-portable.zip" -Force
+
+      - name: Installer
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) { choco install innosetup -y --no-progress }
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=${{ steps.ver.outputs.version }}" desktop\installer.iss
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LigerPlayer-windows
+          path: dist/*
+
+      - name: Publish release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
