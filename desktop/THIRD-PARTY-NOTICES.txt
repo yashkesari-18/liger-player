@@ -1,0 +1,29 @@
+Liger Player for Windows bundles the following open-source components.
+
+mpv / libmpv (libmpv-2.dll)
+  Playback engine. https://mpv.io  Source: https://github.com/mpv-player/mpv
+  Windows build by shinchiro: https://github.com/shinchiro/mpv-winbuild-cmake
+  License: GNU GPL v2 or later (this build includes GPL components such as FFmpeg with GPL options).
+
+FFmpeg (inside libmpv-2.dll)
+  https://ffmpeg.org  License: GNU GPL v2 or later for this build.
+
+Qt 6 and PySide6 (Qt for Python)
+  https://www.qt.io  https://wiki.qt.io/Qt_for_Python  License: GNU LGPL v3.
+  The Qt libraries are shipped as separate DLLs and can be replaced.
+
+python-mpv
+  https://github.com/jaseg/python-mpv  License: GNU GPL v2 or later / LGPL v2.1 or later.
+
+Python
+  https://www.python.org  License: Python Software Foundation License.
+
+Fonts: Chakra Petch, Manrope, JetBrains Mono
+  https://fonts.google.com  License: SIL Open Font License 1.1 (see liger/assets/fonts/OFL-*.txt).
+
+Live TV channel list
+  Downloaded at run time from iptv-org (https://github.com/iptv-org). Data license: The Unlicense.
+  Liger Player hosts no video and removes channels marked as adult or blocklisted.
+
+Because libmpv is GPL, the Windows build of Liger Player as a whole is distributed under the
+GNU GPL v3 or later. The complete source code is at https://github.com/yashkesari-18/liger-player
