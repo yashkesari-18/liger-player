@@ -27,7 +27,8 @@ jobs:
       - name: Install Python packages
         run: |
           python -m pip install --upgrade pip
-          pip install -r desktop/requirements.txt pyinstaller==6.11.1
+          pip install -r desktop/requirements.txt pyinstaller
+          pip list
 
       - name: Download libmpv (playback engine)
         shell: pwsh
@@ -73,6 +74,19 @@ jobs:
           $r = Get-Content selftest.txt -Raw
           Write-Host "---- self-test log ----"; Write-Host $r
           if ($r -notmatch "(?m)^ok ") { throw "LigerPlayer.exe could not start the playback engine (see log above)" }
+
+      - name: Diagnose (console build prints start-up errors)
+        if: steps.selftest.outcome == 'failure'
+        working-directory: desktop
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $env:LIGER_CONSOLE = "1"
+          pyinstaller --noconfirm --log-level WARN --distpath dist-console --workpath build-console liger.spec
+          $ErrorActionPreference = "Continue"
+          cmd /c "dist-console\LigerPlayer\LigerPlayer.exe --selftest `"$PWD\selftest-console.txt`" 2>&1"
+          Write-Host ("exit code: {0} (0x{0:X8})" -f $LASTEXITCODE)
+          if (Test-Path selftest-console.txt) { Get-Content selftest-console.txt }
 
       - name: Version number
         id: ver
