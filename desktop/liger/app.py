@@ -7,10 +7,10 @@ import random
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QObject, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QAction, QColor, QGuiApplication, QKeySequence
+from PySide6.QtCore import QEvent, QObject, QPoint, QSize, Qt, QTimer, Signal
+from PySide6.QtGui import QAction, QActionGroup, QColor, QGuiApplication, QKeySequence
 from PySide6.QtWidgets import (QApplication, QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit, QComboBox, QListWidget, QListWidgetItem,
-                               QMainWindow, QMenu, QPushButton, QSlider, QSplitter, QTabWidget, QToolButton, QVBoxLayout, QWidget, QAbstractSpinBox)
+                               QMainWindow, QMenu, QPushButton, QWidgetAction, QSlider, QSplitter, QTabWidget, QToolButton, QVBoxLayout, QWidget, QAbstractSpinBox)
 
 from . import theme
 from .i18n import Tr
@@ -19,7 +19,7 @@ from .rgb import Lighting
 from .settings import EQ_BANDS, Store, data_dir
 from .settings_ui import SettingsDialog
 from .tvui import TVPanel
-from .video import LogoMark, PlayButton, SeekBar, StageFrame, VideoView, fmt
+from .video import LiveBadge, LogoMark, PlayButton, SeekBar, StageFrame, VideoView, fmt
 
 MEDIA_EXT = {".mp4", ".mkv", ".webm", ".avi", ".mov", ".wmv", ".flv", ".m4v", ".ts", ".m2ts", ".mpg", ".mpeg", ".3gp", ".ogv",
              ".mp3", ".flac", ".wav", ".ogg", ".opus", ".m4a", ".aac", ".wma", ".alac", ".ape", ".mka"}
@@ -138,7 +138,8 @@ class App(QMainWindow):
         self.l_pos = QLabel("0:00"); self.l_pos.setObjectName("mono")
         self.seek = SeekBar(self); self.seek.seek.connect(self.seek_to); self.rgb_widgets.add(self.seek)
         self.l_dur = QLabel("0:00"); self.l_dur.setObjectName("mono")
-        sr.addWidget(self.l_pos); sr.addWidget(self.seek, 1); sr.addWidget(self.l_dur)
+        self.live_badge = LiveBadge(self); self.live_badge.clicked.connect(self.go_live); self.live_badge.hide()
+        sr.addWidget(self.l_pos); sr.addWidget(self.seek, 1); sr.addWidget(self.l_dur); sr.addWidget(self.live_badge)
         dv.addLayout(sr)
         cr = QHBoxLayout(); cr.setSpacing(2)
         self.btn = {}
@@ -160,7 +161,7 @@ class App(QMainWindow):
         self.vol = QSlider(Qt.Horizontal); self.vol.setFixedWidth(100); self.vol.setRange(0, 100); self.vol.setValue(int(self.s["volume"]))
         self.vol.valueChanged.connect(self.set_volume); cr.addWidget(self.vol)
         self.l_vol = QLabel("80%"); self.l_vol.setObjectName("mono"); self.l_vol.setFixedWidth(40); cr.addWidget(self.l_vol)
-        tb("cc", self.cycle_subs)
+        tb("cc", self.subs_menu)
         tb("shot", self.screenshot)
         tb("full", self.fullscreen)
         dv.addLayout(cr)
@@ -469,6 +470,7 @@ class App(QMainWindow):
             return
         self._before_switch()
         self.live, self.cur, self.ended = ch, -1, False
+        self._live_gap = None
         self.setp("referrer", ch.get("r") or ""); self.setp("user-agent", ch.get("ua") or "Mozilla/5.0 LigerPlayer")
         if self.s["lowlat"]:
             try:
@@ -625,9 +627,136 @@ class App(QMainWindow):
         try:
             self.m.command("cycle", "sub")
             sid = self.prop("sid", False)
-            self.osd(f"{self.tr('c_subtitles')}: {'off' if sid in (False, 'no', None) else sid}")
+            t = next((x for x in tracks if x.get("id") == sid), None)
+            name = "Off" if not t else self._sub_label(t).split("\t")[0]
+            self.osd(f"{self.tr('c_subtitles')}: {name}")
+            self.btn["cc"].setIcon(theme.icon("cc", self.accent() if t else self.tok["ink"]))
         except Exception:
             pass
+
+    # ------------------------------------------------------------------ live edge
+    def _update_live_badge(self, unseekable):
+        """Live HLS keeps a short window you can rewind in. The smallest gap seen between the playhead and
+        the end of that window is "live" for this channel; once you fall 10 s further behind, offer GO LIVE."""
+        if unseekable or not self.dur:
+            self.live_badge.set_behind(False)
+            return
+        gap = max(0.0, self.dur - self.pos)
+        if self.playing():
+            self._live_gap = gap if getattr(self, "_live_gap", None) is None else min(self._live_gap, gap)
+        base = self._live_gap if getattr(self, "_live_gap", None) is not None else gap
+        behind = gap - base
+        self.live_badge.set_behind(behind > 10, behind)
+
+    def go_live(self):
+        if not self.live:
+            return
+        try:
+            if self.prop("seekable", False) and self.dur:
+                self.m.command("seek", max(0.0, self.dur - (self._live_gap or 2.0)), "absolute")
+            self.setp("pause", False)
+            self.osd("LIVE")
+        except Exception:
+            pass
+
+    # ------------------------------------------------------------------ subtitle menu
+    @staticmethod
+    def _lang_names(code):
+        """(native name, English name) for an mpv language tag such as eng, pt-BR or chi."""
+        if not code:
+            return "", ""
+        from PySide6.QtCore import QLocale
+        base = code.replace("_", "-").split("-")[0]
+        try:
+            lang = QLocale.codeToLanguage(base)
+        except Exception:
+            return "", code
+        if not lang or lang.value == 0:
+            return "", code
+        eng = QLocale.languageToString(lang)
+        native = {"English": "English", "Spanish": "Español", "Chinese": "中文"}.get(eng) or QLocale(lang).nativeLanguageName()
+        if "-" in code:
+            loc = QLocale(code.replace("-", "_"))
+            if loc.language() == lang and loc.territory().value:
+                native = f"{native} ({loc.nativeTerritoryName()})"
+        return (native[:1].upper() + native[1:]) if native else "", eng
+
+    def _sub_label(self, t):
+        native, eng = self._lang_names(t.get("lang") or "")
+        title = (t.get("title") or "").strip()
+        left = title or native or eng or f"Track {t.get('id')}"
+        tags = []
+        if eng and eng.lower() not in left.lower():
+            tags.append(eng)
+        if t.get("forced"):
+            tags.append("Forced")
+        if t.get("hearing-impaired") or "sdh" in title.lower():
+            if "SDH" not in left:
+                tags.append("SDH")
+        if t.get("external"):
+            tags.append("File")
+        return left + ("\t" + " · ".join(tags) if tags else "")
+
+    def _menu_head(self, menu, text, accent=False):
+        lab = QLabel(text.upper())
+        lab.setObjectName("menuHead")
+        if accent:
+            lab.setProperty("accent", "true")
+        wa = QWidgetAction(menu)
+        wa.setDefaultWidget(lab)
+        wa.setEnabled(False)
+        menu.addAction(wa)
+
+    def subs_menu(self):
+        btn = self.btn["cc"]
+        if not self.has_media():
+            self.osd(self.tr("nomedia")); return
+        tracks = [t for t in (self.prop("track-list", []) or []) if t.get("type") == "sub"]
+        sid = self.prop("sid", False)
+        menu = QMenu(self)
+        menu.setMinimumWidth(300)
+        self._menu_head(menu, self.tr("c_subtitles") + (f"  ·  {len(tracks)}" if tracks else ""))
+        grp = QActionGroup(menu)
+        grp.setExclusive(True)
+        off = menu.addAction("Off")
+        off.setCheckable(True); off.setChecked(sid in (False, "no", None, 0)); grp.addAction(off)
+        off.triggered.connect(lambda: self._pick_sub(False, "Off"))
+        for t in tracks:
+            label = self._sub_label(t)
+            a = menu.addAction(label)
+            a.setCheckable(True)
+            a.setChecked(bool(t.get("selected")) or t.get("id") == sid)
+            grp.addAction(a)
+            a.triggered.connect(lambda _=False, i=t["id"], n=label.split("\t")[0]: self._pick_sub(i, n))
+        if not tracks:
+            none = menu.addAction("No subtitles in this file")
+            none.setEnabled(False)
+        menu.addSeparator()
+        add = menu.addAction("Add subtitle file…")
+        add.triggered.connect(self.open_subs)
+        d = self.s["subDelay"]
+        earlier = menu.addAction(f"Show 50 ms earlier\t{self.s['hotkeys'].get('subminus') or ''}")
+        earlier.triggered.connect(lambda: self.sub_shift(-50))
+        later = menu.addAction(f"Show 50 ms later\t{self.s['hotkeys'].get('subplus') or ''}")
+        later.triggered.connect(lambda: self.sub_shift(50))
+        if d:
+            reset = menu.addAction(f"Reset delay ({d:+d} ms)")
+            reset.triggered.connect(lambda: (self.s.set("subDelay", 0), self.osd("Sub delay 0 ms")))
+        style = menu.addAction("Subtitle style…")
+        style.triggered.connect(lambda: self.open_settings("subtitles"))
+        # open above the button, right edges aligned, so it never covers the seek bar
+        hint = menu.sizeHint()
+        top_right = btn.mapToGlobal(QPoint(btn.width(), 0))
+        pos = QPoint(top_right.x() - hint.width(), top_right.y() - hint.height() - 6)
+        scr = btn.screen().availableGeometry() if btn.screen() else None
+        if scr and pos.y() < scr.top():
+            pos.setY(scr.top())
+        menu.exec(pos)
+
+    def _pick_sub(self, sid, name):
+        self.setp("sid", sid if sid else "no")
+        self.osd(f"{self.tr('c_subtitles')}: {name}")
+        self.btn["cc"].setIcon(theme.icon("cc", self.accent() if sid else self.tok["ink"]))
 
     def sub_shift(self, ms):
         self.s.set("subDelay", max(-5000, min(5000, self.s["subDelay"] + ms)))
@@ -702,8 +831,14 @@ class App(QMainWindow):
         self.seek.buf = self.pos + (self.prop("demuxer-cache-duration", 0.0) or 0.0)
         a, b = self.prop("ab-loop-a", "no"), self.prop("ab-loop-b", "no")
         self.seek.ab = (None if a == "no" else a, None if b == "no" else b)
-        self.l_pos.setText(fmt(self.pos))
-        self.l_dur.setText("LIVE" if live_unseekable else ("−" + fmt(self.dur - self.pos) if self.s["remaining"] and self.dur else fmt(self.dur)))
+        live = bool(self.live)
+        if self.l_pos.isHidden() != live:
+            self.l_pos.setVisible(not live); self.l_dur.setVisible(not live); self.live_badge.setVisible(live)
+        if live:
+            self._update_live_badge(live_unseekable)
+        else:
+            self.l_pos.setText(fmt(self.pos))
+            self.l_dur.setText("−" + fmt(self.dur - self.pos) if self.s["remaining"] and self.dur else fmt(self.dur))
         sp = self.prop("speed", 1.0)
         self.b_speed.setText(f"{sp:.2f}×"); self.b_speed.setChecked(abs(sp - 1) > 0.001)
         if self.play_btn.playing != self.playing():

@@ -1,4 +1,5 @@
 """The stage: libmpv rendered into an OpenGL widget, with Qt-painted overlays (Tigu, OSD, stats, RGB corners)."""
+import math
 import time
 
 import mpv
@@ -238,7 +239,12 @@ class SeekBar(QWidget):
         p.setPen(QPen(QColor(a.accent()), 3)); p.setBrush(QColor(t["panel"])); p.drawRect(QRectF(-5, -5, 10, 10))
         p.restore()
         if self.hover_x is not None and self.dur and not self.live:
-            tt = fmt(self.hover_x / w * self.dur)
+            t_at = self.hover_x / w * self.dur
+            if self.a.live:
+                behind = self.dur - t_at
+                tt = "LIVE" if behind < 3 else "−" + fmt(behind)
+            else:
+                tt = fmt(t_at)
             f = QFont(MONO); f.setPixelSize(11); p.setFont(f)
             tw = p.fontMetrics().horizontalAdvance(tt) + 10
             bx = min(max(0, self.hover_x - tw / 2), w - tw)
@@ -261,6 +267,95 @@ class SeekBar(QWidget):
     def leaveEvent(self, _):
         self.hover_x = None
         self.update()
+
+
+class LiveBadge(QAbstractButton):
+    """Shown instead of the timers while a live channel plays.
+
+    At the live edge it is a red tag with a pulsing dot and a radar ring.
+    After a pause or rewind it turns into an outlined GO LIVE button that jumps back to the edge.
+    """
+
+    RED = "#e5383b"
+
+    def __init__(self, app):
+        super().__init__()
+        self.a = app
+        self.behind = False
+        self.t0 = time.monotonic()
+        self.setCursor(Qt.PointingHandCursor)
+        self.setFixedHeight(22)
+        self._t = QTimer(self)
+        self._t.setInterval(33)
+        self._t.timeout.connect(self.update)
+        self._resize()
+
+    def set_behind(self, behind, secs=0.0):
+        self.setToolTip(f"{fmt(secs)} behind live. Click to jump to the live edge." if behind else "Watching live")
+        if behind != self.behind:
+            self.behind = behind
+            self._resize()
+            self.update()
+
+    def _font(self):
+        f = QFont(DISPLAY)
+        f.setPixelSize(11)
+        f.setWeight(QFont.Bold)
+        f.setLetterSpacing(QFont.AbsoluteSpacing, 1.4)
+        return f
+
+    def _text(self):
+        return "GO LIVE" if self.behind else "LIVE"
+
+    def _resize(self):
+        from PySide6.QtGui import QFontMetrics
+        self.setFixedWidth(26 + QFontMetrics(self._font()).horizontalAdvance(self._text()) + 10)
+
+    def showEvent(self, e):
+        self._t.start()
+        super().showEvent(e)
+
+    def hideEvent(self, e):
+        self._t.stop()
+        super().hideEvent(e)
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        r = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        t = time.monotonic() - self.t0
+        red = QColor(self.RED)
+        path = chamfer(r, 5)
+        cx, cy = 13.0, r.center().y()
+        if self.behind:
+            p.setPen(QPen(QColor(self.a.tok["muted"]) if not self.underMouse() else red, 1))
+            p.setBrush(QColor(self.a.tok["panel"]))
+            p.drawPath(path)
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor(self.a.tok["muted"]) if not self.underMouse() else red)
+            p.drawEllipse(QPointF(cx, cy), 3.2, 3.2)
+            ink = QColor(self.a.tok["ink"]) if not self.underMouse() else red
+        else:
+            p.setPen(Qt.NoPen)
+            p.setBrush(red)
+            p.drawPath(path)
+            ph = (t % 1.6) / 1.6
+            ring = QColor("#ffffff")
+            ring.setAlphaF(max(0.0, 0.85 * (1 - ph)))
+            p.setPen(QPen(ring, 1.4))
+            p.setBrush(Qt.NoBrush)
+            p.drawEllipse(QPointF(cx, cy), 3.2 + 6.0 * ph, 3.2 + 6.0 * ph)
+            beat = 0.55 + 0.45 * (0.5 + 0.5 * math.cos(t * math.tau / 1.6))
+            dot = QColor("#ffffff")
+            dot.setAlphaF(beat)
+            p.setPen(Qt.NoPen)
+            p.setBrush(dot)
+            p.drawEllipse(QPointF(cx, cy), 3.2, 3.2)
+            ink = QColor("#ffffff")
+        p.setFont(self._font())
+        p.setPen(ink)
+        p.drawText(QRectF(24, 0, r.width() - 26, r.height()), Qt.AlignVCenter | Qt.AlignLeft, self._text())
+        p.end()
 
 
 class PlayButton(QAbstractButton):

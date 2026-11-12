@@ -132,8 +132,17 @@ QScrollBar::add-line, QScrollBar::sub-line {{ width: 0; height: 0; }}
 QScrollArea {{ border: none; background: {t['panel']}; }}
 QWidget#page {{ background: {t['panel']}; }}
 QFrame#row {{ border: none; border-bottom: 1px solid {t['line']}; }}
-QMenu {{ background: {t['panel']}; border: 1px solid {t['line']}; }}
-QMenu::item {{ padding: 7px 18px; }}
-QMenu::item:selected {{ background: {soft}; }}
+QMenu {{ background: {t['panel']}; border: 1px solid {t['line']}; padding: 6px 0; }}
+QMenu::item {{ padding: 8px 22px 8px 30px; color: {t['ink']}; }}
+QMenu::item:selected {{ background: {soft}; color: {t['ink']}; }}
+QMenu::item:checked {{ color: {accent}; font-weight: 600; }}
+QMenu::item:disabled {{ color: {t['muted']}; }}
+QMenu::indicator {{ width: 8px; height: 8px; margin-left: 12px; }}
+QMenu::indicator:checked {{ background: {accent}; border: none; }}
+QMenu::indicator:unchecked {{ background: transparent; border: none; }}
+QMenu::separator {{ height: 1px; background: {t['line']}; margin: 6px 0; }}
+QMenu::scroller {{ height: 14px; background: {t['panel']}; }}
+QLabel#menuHead {{ font-family: "{DISPLAY}"; font-weight: 600; font-size: 11px; letter-spacing: 2px; color: {t['muted']}; padding: 8px 22px 6px 22px; }}
+QLabel#menuHead[accent="true"] {{ color: {accent}; }}
 QToolTip {{ background: {t['ink']}; color: {t['panel']}; border: none; padding: 4px 8px; }}
 """
