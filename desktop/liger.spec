@@ -1,6 +1,7 @@
 # PyInstaller build file for LigerPlayer.exe. Run from the desktop/ folder:  pyinstaller --noconfirm liger.spec
 import os
 block_cipher = None
+DIAG = os.environ.get("LIGER_CONSOLE") == "1"
 binaries = [("libmpv-2.dll", ".")] if os.path.exists("libmpv-2.dll") else []
 
 a = Analysis(
@@ -19,7 +20,8 @@ exe = EXE(
     exclude_binaries=True,
     name="LigerPlayer",
     icon="liger/assets/icon.ico",
-    console=False,
+    console=DIAG,   # LIGER_CONSOLE=1 builds a console + debug variant used by CI to print start-up errors
+    debug=DIAG,
     version="version_info.txt" if os.path.exists("version_info.txt") else None,
 )
 coll = COLLECT(exe, a.binaries, a.datas, strip=False, upx=False, name="LigerPlayer")
