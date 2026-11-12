@@ -41,23 +41,38 @@ jobs:
           Write-Host "Using $($asset.name) from $($rel.tag_name)"
           Invoke-WebRequest -Uri $asset.browser_download_url -OutFile mpv-dev.7z
           7z x mpv-dev.7z -ompv-dev -y | Out-Null
+          Get-ChildItem -Path mpv-dev -Recurse -Filter *.dll | ForEach-Object { Write-Host "found $($_.FullName)" }
           $dll = Get-ChildItem -Path mpv-dev -Recurse -Filter "libmpv-2.dll" | Select-Object -First 1
           if (-not $dll) { throw "libmpv-2.dll not found in $($asset.name)" }
           Copy-Item $dll.FullName desktop\libmpv-2.dll
           "$($asset.name)" | Out-File desktop\LIBMPV-VERSION.txt -Encoding utf8
+
+      - name: Self-test from source (shows Python errors directly)
+        working-directory: desktop
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          python -X faulthandler run_liger.py --selftest "$PWD\selftest-src.txt"
+          Write-Host "exit code: $LASTEXITCODE"
+          if (Test-Path selftest-src.txt) { Get-Content selftest-src.txt } else { Write-Host "no log written" }
 
       - name: Build LigerPlayer.exe
         working-directory: desktop
         run: pyinstaller --noconfirm liger.spec
 
       - name: Check that the engine loads
+        id: selftest
         working-directory: desktop
+        continue-on-error: true
         shell: pwsh
         run: |
-          $p = Start-Process -FilePath "dist\LigerPlayer\LigerPlayer.exe" -ArgumentList "--selftest", "$PWD\selftest.txt" -PassThru -Wait
+          Get-ChildItem dist\LigerPlayer\_internal -Filter *mpv* | ForEach-Object { Write-Host "bundled $($_.Name) $($_.Length) bytes" }
+          $p = Start-Process -FilePath "dist\LigerPlayer\LigerPlayer.exe" -ArgumentList "--selftest", "`"$PWD\selftest.txt`"" -PassThru -Wait
+          Write-Host ("exit code: {0} (0x{0:X8})" -f $p.ExitCode)
+          if (-not (Test-Path selftest.txt)) { throw "LigerPlayer.exe exited before writing its self-test log" }
           $r = Get-Content selftest.txt -Raw
-          Write-Host "Self-test: $r"
-          if (-not $r.StartsWith("ok")) { throw "LigerPlayer.exe could not load libmpv: $r" }
+          Write-Host "---- self-test log ----"; Write-Host $r
+          if ($r -notmatch "(?m)^ok ") { throw "LigerPlayer.exe could not start the playback engine (see log above)" }
 
       - name: Version number
         id: ver
@@ -72,6 +87,8 @@ jobs:
           New-Item -ItemType Directory -Force dist | Out-Null
           Copy-Item LICENSE-DESKTOP.txt, desktop\THIRD-PARTY-NOTICES.txt, desktop\LIBMPV-VERSION.txt desktop\dist\LigerPlayer\
           Compress-Archive -Path desktop\dist\LigerPlayer -DestinationPath "dist\LigerPlayer-${{ steps.ver.outputs.version }}-portable.zip" -Force
+          if (Test-Path desktop\selftest.txt) { Copy-Item desktop\selftest.txt dist\ }
+          if (Test-Path desktop\selftest-src.txt) { Copy-Item desktop\selftest-src.txt dist\ }
 
       - name: Installer
         shell: pwsh
@@ -80,13 +97,22 @@ jobs:
           & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=${{ steps.ver.outputs.version }}" desktop\installer.iss
 
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: LigerPlayer-windows
           path: dist/*
+          if-no-files-found: warn
+
+      - name: Fail if the self-test failed
+        if: steps.selftest.outcome == 'failure'
+        shell: pwsh
+        run: throw "The build finished, but LigerPlayer.exe failed its self-test. Its log is in the artifact (selftest.txt)."
 
       - name: Publish release
-        if: github.ref_type == 'tag'
+        if: github.ref_type == 'tag' && steps.selftest.outcome == 'success'
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/*
+          files: |
+            dist/*.exe
+            dist/*.zip
           generate_release_notes: true
